@@ -147,25 +147,53 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         serializer = InvoiceSerializer(invoice)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-    @action(detail=True, methods=['post'])
-    def send_mail(self, request, pk=None):
-        try:
-            invoice = Invoice.objects.get(pk=pk)
-        except Invoice.DoesNotExist:
-            return Response({'customer': 'Invalid Invoice ID.'},
-                            status=status.HTTP_400_BAD_REQUEST)
+    # @action(detail=True, methods=['post'])
+    # def send_mail(self, request, pk=None):
+    #     try:
+    #         invoice = Invoice.objects.get(pk=pk)
+    #     except Invoice.DoesNotExist:
+    #         return Response({'customer': 'Invalid Invoice ID.'},
+    #                         status=status.HTTP_400_BAD_REQUEST)
 
-        customer = invoice.customer
+    #     customer = invoice.customer
 
-        send_mail(
-            'Activate your account',
-            f'Click the following link to activate your account: {settings.CLIENT_URL}/auth/activate/{token}',
-            settings.EMAIL_HOST_USER,
-            [user.email],
-            fail_silently=False,
-        )
+    #     send_mail(
+    #         'Activate your account',
+    #         f'Click the following link to activate your account: {settings.CLIENT_URL}/auth/activate/{token}',
+    #         settings.EMAIL_HOST_USER,
+    #         [user.email],
+    #         fail_silently=False,
+    #     )
 
 
 class ItemViewSet(viewsets.ModelViewSet):
     queryset = Item.objects.all()
     serializer_class = ItemSerializer
+
+    filter_backends = [DjangoFilterBackend]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    ordering_fields = ['rate', 'stock_on_hand', 'cost_price', 'selling_price']
+    ordering = ['-date']
+
+    def get_queryset(self):
+        queryset = Item.objects.all()
+
+        # Apply filters
+        queryset = self.filter_queryset(queryset)
+
+        # Apply ordering
+        order = self.request.query_params.get('order')
+
+        if order:
+            if order.startswith('-'):
+                queryset = queryset.order_by(order)
+            else:
+                queryset = queryset.order_by(order)
+
+        return queryset
+
+    @action(detail=False, methods=['get'])
+    def get_all_items(self, request):
+        all_items = Item.objects.all()
+        serializer = ItemSerializer(all_items, many=True)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
