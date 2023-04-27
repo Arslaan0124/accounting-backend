@@ -9,16 +9,54 @@ from users.models import CustomUser
 from rest_framework import permissions
 from rest_framework.decorators import action
 from django.core.mail import send_mail
+from django.conf import settings
+from django.core.mail import EmailMultiAlternatives
+from django.template.loader import render_to_string
+from django.utils.html import strip_tags
+import os
+from io import BytesIO
+from reportlab.pdfgen import canvas
+from django.core.files.base import ContentFile
+from datetime import datetime, timedelta
+from django.db.models import Sum, F, FloatField
+from django.http import JsonResponse
 
 
 class CustomerViewSet(viewsets.ModelViewSet):
     queryset = Customer.objects.all()
     serializer_class = CustomerSerializer
 
+    ordering_fields = ['created_at', 'type']
+    ordering = ['-created_at']
+
+    @action(detail=True, methods=['get'])
+    def get_invoices(self, request, pk=None):
+        customer = self.get_object()
+        invoices = customer.invoices
+        serializer = InvoiceSerializer(invoices, many=True)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
     def filter_queryset(self, queryset):
         name = self.request.query_params.get('name', None)
         if name:
             queryset = queryset.filter(name__icontains=name)
+        return queryset
+
+    def get_queryset(self):
+        queryset = Customer.objects.all()
+
+        # Apply filters
+        queryset = self.filter_queryset(queryset)
+
+        # Apply ordering
+        order = self.request.query_params.get('order')
+
+        if order:
+            if order.startswith('-'):
+                queryset = queryset.order_by(order)
+            else:
+                queryset = queryset.order_by(order)
+
         return queryset
 
 
@@ -37,20 +75,16 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         'date': ['exact', 'gte', 'lte'],
         'due_date': ['exact', 'gte', 'lte'],
         'order_number': ['exact'],
+        'status': ['exact'],
+        'payment_status': ['exact'],
     }
     ordering_fields = ['order_number', 'date', 'due_date']
     ordering = ['-date']
 
     def get_queryset(self):
         queryset = Invoice.objects.all()
-
-        # Apply filters
         queryset = self.filter_queryset(queryset)
-
-        # Apply ordering
         order = self.request.query_params.get('order')
-
-        print(order)
 
         if order:
             if order.startswith('-'):
@@ -147,23 +181,72 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         serializer = InvoiceSerializer(invoice)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-    # @action(detail=True, methods=['post'])
-    # def send_mail(self, request, pk=None):
-    #     try:
-    #         invoice = Invoice.objects.get(pk=pk)
-    #     except Invoice.DoesNotExist:
-    #         return Response({'customer': 'Invalid Invoice ID.'},
-    #                         status=status.HTTP_400_BAD_REQUEST)
+    @action(detail=True, methods=['post'])
+    def send_email(self, request, pk=None):
+        invoice = self.get_object()
+        customer_email = invoice.customer.email
+        subject = f'Your invoice Number is {invoice.order_number}'
 
-    #     customer = invoice.customer
+        # Load the HTML email template and render it with the invoice data
+        template_path = 'email_templates/invoice_email_template.html'  # Set the path to your email template here
+        html_message = render_to_string(template_path, {'invoice': invoice})
 
-    #     send_mail(
-    #         'Activate your account',
-    #         f'Click the following link to activate your account: {settings.CLIENT_URL}/auth/activate/{token}',
-    #         settings.EMAIL_HOST_USER,
-    #         [user.email],
-    #         fail_silently=False,
-    #     )
+        # Generate the PDF version of the invoice
+        buffer = BytesIO()
+        p = canvas.Canvas(buffer)
+        p.drawString(100, 750, f"Invoice Number: {invoice.order_number}")
+        p.drawString(100, 700, f"Customer Name: {invoice.customer.name}")
+        p.drawString(100, 650, f"REST OF THE PDF WILL BE GENERATED LATER :)")
+        p.showPage()
+        p.save()
+        pdf_content = buffer.getvalue()
+        buffer.close()
+
+        # Create the plain text version of the message by stripping the HTML tags from the HTML version
+        text_message = strip_tags(html_message)
+
+        # Attach both the PDF and HTML versions of the message to the email
+        pdf_file = ContentFile(pdf_content)
+        pdf_file.name = f"invoice-{invoice.order_number}.pdf"
+        email = EmailMultiAlternatives(subject,
+                                       text_message,
+                                       from_email=settings.EMAIL_HOST_USER,
+                                       to=[customer_email])
+        email.attach_alternative(html_message, "text/html")
+        email.attach(pdf_file.name, pdf_content, 'application/pdf')
+
+        try:
+            # Send the email
+            email.send()
+
+            invoice.sent_times += 1
+            invoice.save()
+
+            return Response({'success': True})
+        except:
+            return Response({'success': False})
+
+    @action(detail=True, methods=['post'])
+    def update_payment_status(self, request, pk=None):
+        try:
+            invoice = self.get_object()
+            print(request.data)
+            payment_status = request.data.get('payment_status', '').lower()
+
+            if payment_status == 'paid':
+                invoice.payment_status = 'paid'
+            elif payment_status == 'unpaid':
+                invoice.payment_status = 'unpaid'
+            else:
+                return Response({
+                    'success': False,
+                    'message': 'Invalid payment status'
+                })
+
+            invoice.save()
+            return Response({'success': True})
+        except:
+            return Response({'success': False})
 
 
 class ItemViewSet(viewsets.ModelViewSet):
@@ -197,3 +280,87 @@ class ItemViewSet(viewsets.ModelViewSet):
         all_items = Item.objects.all()
         serializer = ItemSerializer(all_items, many=True)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+# @action(detail=False, methods=['get'])
+def get_sales_and_profit(request):
+    # Calculate the date ranges for the past month, week, and year
+    total_invoices = Invoice.objects.count()
+    total_customers = Customer.objects.count()
+    total_items = Item.objects.count()
+
+    today = datetime.today().date()
+    month_ago = today - timedelta(days=30)
+    week_ago = today - timedelta(days=7)
+    year_ago = today - timedelta(days=365)
+
+    # Calculate the total sales and profits for the past month, week, and year
+    sales_month = Invoice.objects.filter(
+        date__gte=month_ago, payment_status='paid').aggregate(total_sales=Sum(
+            F('items__rate') *
+            F('items__quantity'), output_field=FloatField()))
+    sales_week = Invoice.objects.filter(
+        date__gte=week_ago, payment_status='paid').aggregate(total_sales=Sum(
+            F('items__rate') *
+            F('items__quantity'), output_field=FloatField()))
+    sales_year = Invoice.objects.filter(
+        date__gte=year_ago, payment_status='paid').aggregate(total_sales=Sum(
+            F('items__rate') *
+            F('items__quantity'), output_field=FloatField()))
+
+    # profit_month = Invoice.objects.filter(
+    #     date__gte=month_ago, payment_status='paid').annotate(
+    #         total_cost=Sum('items__cost_price')).aggregate(
+    #             total_profit=Sum(F('items__selling_price') *
+    #                              F('items__quantity') - F('total_cost'),
+    #                              output_field=FloatField()))
+    # profit_week = Invoice.objects.filter(
+    #     date__gte=week_ago, payment_status='paid').annotate(
+    #         total_cost=Sum('items__cost_price')).aggregate(
+    #             total_profit=Sum(F('items__selling_price') *
+    #                              F('items__quantity') - F('total_cost'),
+    #                              output_field=FloatField()))
+    # profit_year = Invoice.objects.filter(
+    #     date__gte=year_ago, payment_status='paid').annotate(
+    #         total_cost=Sum('items__cost_price')).aggregate(
+    #             total_profit=Sum(F('items__selling_price') *
+    #                              F('items__quantity') - F('total_cost'),
+    #                              output_field=FloatField()))
+
+    # Return the sales and profits as a JSON response
+    data = {
+        'sales': {
+            'month': sales_month['total_sales'] or 0,
+            'week': sales_week['total_sales'] or 0,
+            'year': sales_year['total_sales'] or 0,
+        },
+        'profits': {
+            # 'month': profit_month['total_profit'] or 0,
+            # 'week': profit_week['total_profit'] or 0,
+            # 'year': profit_year['total_profit'] or 0,
+        }
+    }
+    return JsonResponse(data)
+
+
+# GET ALL CUSTOMERS THAT HAVE SOME INVOICES WHICH ARE PAID
+def customers_with_sales(self, request, pk=None):
+    try:
+        invoice = self.get_object()
+        print(request.data)
+        payment_status = request.data.get('payment_status', '').lower()
+
+        if payment_status == 'paid':
+            invoice.payment_status = 'paid'
+        elif payment_status == 'unpaid':
+            invoice.payment_status = 'unpaid'
+        else:
+            return Response({
+                'success': False,
+                'message': 'Invalid payment status'
+            })
+
+        invoice.save()
+        return Response({'success': True})
+    except:
+        return Response({'success': False})

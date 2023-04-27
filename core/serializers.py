@@ -19,6 +19,14 @@ class ItemDetailSerializer(serializers.ModelSerializer):
         fields = ('id', 'item', 'quantity', 'rate', 'discount', 'tax')
 
 
+class ItemDetailListSerializer(ItemDetailSerializer):
+    item = serializers.PrimaryKeyRelatedField(queryset=Item.objects.all())
+
+    class Meta:
+        model = ItemDetail
+        fields = ('id', 'item')
+
+
 class CustomerSerializer(serializers.ModelSerializer):
 
     class Meta:
@@ -34,21 +42,22 @@ class InvoiceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Invoice
         fields = ('id', 'user', 'customer', 'order_number', 'date', 'due_date',
-                  'created_at', 'status', 'billing_address',
+                  'created_at', 'status', 'payment_status', 'billing_address',
                   'shipping_address', 'remarks', 'shipping_charges',
                   'adjustment', 'customer_notes', 'terms_and_conditions',
-                  'file_upload', 'items')
+                  'sent_times', 'file_upload', 'items')
+        read_only_fields = ('sent_times', )
 
-    # def create(self, validated_data):
-    #     print(validated_data)
-    #     item_details_data = validated_data.pop('items')
-    #     customer_id = validated_data.pop('customer')
-    #     customer = Customer.objects.get(id=customer_id)
-    #     invoice = Invoice.objects.create(customer=customer, **validated_data)
-    #     for item_detail_data in item_details_data:
-    #         item_data = item_detail_data.pop('item')
-    #         item = Item.objects.get(pk=item_data['id'])
-    #         item_detail = ItemDetail.objects.create(invoice=invoice,
-    #                                                 item=item,
-    #                                                 **item_detail_data)
-    #     return invoice
+    def get_fields(self):
+        fields = super().get_fields()
+
+        # Use ItemDetailListSerializer when a list of invoices is requested
+        if 'view' in self.context:
+            if self.context['view'].action == 'list':
+                fields['items'] = ItemDetailListSerializer(many=True)
+            else:
+                fields['items'] = ItemDetailSerializer(many=True)
+        else:
+            fields['items'] = ItemDetailSerializer(many=True)
+
+        return fields
