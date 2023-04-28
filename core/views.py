@@ -20,6 +20,7 @@ from django.core.files.base import ContentFile
 from datetime import datetime, timedelta
 from django.db.models import Sum, F, FloatField
 from django.http import JsonResponse
+from decimal import Decimal
 
 
 class CustomerViewSet(viewsets.ModelViewSet):
@@ -343,24 +344,95 @@ def get_sales_and_profit(request):
     return JsonResponse(data)
 
 
+def calculate_invoice_total(items):
+    subtotals = []
+    for item in items:
+        quantity = item.quantity
+        selling_price = float(item.item.selling_price)
+        discount_percentage = float(item.discount)
+        tax_percentage = float(item.tax)
+
+        # Calculate subtotal
+        subtotal = quantity * selling_price
+        # Apply discount
+        discount_amount = subtotal * (discount_percentage / 100)
+        subtotal -= discount_amount
+        # Apply tax
+        tax_amount = subtotal * (tax_percentage / 100)
+        subtotal += tax_amount
+
+        subtotals.append(subtotal)
+
+    # Calculate grand total
+    grand_total = sum(subtotals)
+    return grand_total
+
+
 # GET ALL CUSTOMERS THAT HAVE SOME INVOICES WHICH ARE PAID
-def customers_with_sales(self, request, pk=None):
-    try:
-        invoice = self.get_object()
-        print(request.data)
-        payment_status = request.data.get('payment_status', '').lower()
+def get_customers_with_sales(request):
+    # Get all customers that have at least one paid invoice
+    customers = Customer.objects.filter(
+        invoices__payment_status='paid').distinct()
 
-        if payment_status == 'paid':
-            invoice.payment_status = 'paid'
-        elif payment_status == 'unpaid':
-            invoice.payment_status = 'unpaid'
-        else:
-            return Response({
-                'success': False,
-                'message': 'Invalid payment status'
+    # Calculate total paid and unpaid invoices for each customer
+    customer_totals = []
+    for customer in customers:
+        paid_invoices = customer.invoices.filter(payment_status='paid')
+        unpaid_invoices = customer.invoices.filter(payment_status='unpaid')
+        invoice_list = []
+        total_sale = 0
+        for invoice in paid_invoices:
+            total_sale += calculate_invoice_total(invoice.items.all())
+            invoice_list.append({
+                'id':
+                invoice.id,
+                'order_number':
+                invoice.order_number,
+                'date':
+                invoice.date,
+                'total_sale':
+                calculate_invoice_total(invoice.items.all())
             })
+        customer_totals.append({
+            'name': customer.name,
+            'paid_invoices': paid_invoices.count(),
+            'unpaid_invoices': unpaid_invoices.count(),
+            'invoices': invoice_list,
+            'total_sale': total_sale
+        })
 
-        invoice.save()
-        return Response({'success': True})
-    except:
-        return Response({'success': False})
+    # Return response with list of customer invoice totals
+    return JsonResponse({'customer_totals': customer_totals})
+
+
+def get_profit_and_cost_of_paid_invoices(request):
+    # Get all paid invoices
+    paid_invoices = Invoice.objects.filter(payment_status='paid')
+
+    # Calculate total cost and profit of all paid invoices
+    total_cost = Decimal(0)
+    total_profit = float(0)
+    invoice_list = []
+    for invoice in paid_invoices:
+        cost = Decimal(0)
+        for item in invoice.items.all():
+            cost += item.item.cost_price * item.quantity
+        total_cost += cost
+        revenue = calculate_invoice_total(invoice.items.all())
+        profit = revenue - float(cost)
+        total_profit += profit
+        invoice_list.append({
+            'id': invoice.id,
+            'order_number': invoice.order_number,
+            'date': invoice.date,
+            'revenue': revenue,
+            'cost': cost,
+            'profit': profit,
+        })
+
+    # Return response with total cost and profit of all paid invoices
+    return JsonResponse({
+        'total_cost': str(total_cost),
+        'total_profit': str(total_profit),
+        'invoices': invoice_list,
+    })
