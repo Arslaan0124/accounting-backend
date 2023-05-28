@@ -1,6 +1,6 @@
 from rest_framework import viewsets, status
 from .models import Invoice, ItemDetail, Item, Customer
-from .serializers import InvoiceSerializer, ItemDetailSerializer, ItemSerializer, CustomerSerializer
+from .serializers import InvoiceSerializer, ItemDetailSerializer, ItemSerializer, CustomerSerializer, AddressSerializer
 from django_filters.rest_framework import DjangoFilterBackend
 from django_filters import rest_framework as filters
 from rest_framework.response import Response
@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 from django.db.models import Sum, F, FloatField
 from django.http import JsonResponse
 from decimal import Decimal
+from weasyprint import HTML
 
 
 class CustomerViewSet(viewsets.ModelViewSet):
@@ -96,7 +97,6 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         return queryset
 
     def create(self, request, *args, **kwargs):
-        print(request.user)
         user = CustomUser.objects.get(id=request.user.id)
 
         customer_id = request.data.get('customer')
@@ -182,6 +182,11 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         serializer = InvoiceSerializer(invoice)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
+    @action(detail=False, methods=['get'])
+    def get_invoice_count(self, request):
+        total_count = Invoice.objects.count()
+        return Response({"invoice_count": total_count})
+
     @action(detail=True, methods=['post'])
     def send_email(self, request, pk=None):
         invoice = self.get_object()
@@ -192,16 +197,15 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         template_path = 'email_templates/invoice_email_template.html'  # Set the path to your email template here
         html_message = render_to_string(template_path, {'invoice': invoice})
 
-        # Generate the PDF version of the invoice
-        buffer = BytesIO()
-        p = canvas.Canvas(buffer)
-        p.drawString(100, 750, f"Invoice Number: {invoice.order_number}")
-        p.drawString(100, 700, f"Customer Name: {invoice.customer.name}")
-        p.drawString(100, 650, f"REST OF THE PDF WILL BE GENERATED LATER :)")
-        p.showPage()
-        p.save()
-        pdf_content = buffer.getvalue()
-        buffer.close()
+        # Generate the PDF version of the invoice using WeasyPrint
+        html = render_to_string(
+            template_path, {'invoice': invoice})  # Render the HTML template
+        pdf_file = f"invoice-{invoice.order_number}.pdf"  # Output PDF file name
+        HTML(string=html).write_pdf(
+            pdf_file)  # Use WeasyPrint to generate the PDF
+        with open(pdf_file, 'rb') as f:
+            pdf_content = f.read()  # Read the generated PDF content
+        os.remove(pdf_file)  # Remove the temporary PDF file
 
         # Create the plain text version of the message by stripping the HTML tags from the HTML version
         text_message = strip_tags(html_message)

@@ -3,6 +3,18 @@ from users.models import CustomUser
 from django.utils.translation import gettext_lazy as _
 
 
+class Address(models.Model):
+    country = models.CharField(max_length=255)
+    address = models.TextField()
+    city = models.CharField(max_length=255)
+    state = models.CharField(max_length=255)
+    zip_code = models.CharField(max_length=20)
+    phone = models.CharField(max_length=20)
+
+    def __str__(self):
+        return f"{self.address}, {self.city}, {self.state}, {self.zip_code}"
+
+
 class Customer(models.Model):
     TYPE_CHOICES = [('business', 'Business'), ('individual', 'Individual')]
 
@@ -14,8 +26,12 @@ class Customer(models.Model):
     phone = models.CharField(max_length=20, blank=True)
     website = models.URLField(max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    billing_address = models.TextField()
-    shipping_address = models.TextField()
+    billing_address = models.ForeignKey(Address,
+                                        related_name='billing_customers',
+                                        on_delete=models.CASCADE)
+    shipping_address = models.ForeignKey(Address,
+                                         related_name='shipping_customers',
+                                         on_delete=models.CASCADE)
 
     def __str__(self):
         return self.name

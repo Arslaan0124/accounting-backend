@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Invoice, ItemDetail, Item, Customer
+from .models import Invoice, ItemDetail, Item, Customer, Address
 from rest_framework import serializers
 from users.serializers import UserSerializer
 
@@ -27,11 +27,39 @@ class ItemDetailListSerializer(ItemDetailSerializer):
         fields = ('id', 'item')
 
 
+class AddressSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = Address
+        fields = [
+            'id', 'country', 'address', 'city', 'state', 'zip_code', 'phone'
+        ]
+
+
 class CustomerSerializer(serializers.ModelSerializer):
+    billing_address = AddressSerializer()
+    shipping_address = AddressSerializer()
 
     class Meta:
         model = Customer
-        fields = '__all__'
+        fields = [
+            'id', 'name', 'company_name', 'type', 'display_name', 'email',
+            'phone', 'website', 'created_at', 'billing_address',
+            'shipping_address'
+        ]
+
+    def create(self, validated_data):
+        billing_address_data = validated_data.pop('billing_address')
+        shipping_address_data = validated_data.pop('shipping_address')
+
+        billing_address = Address.objects.create(**billing_address_data)
+        shipping_address = Address.objects.create(**shipping_address_data)
+
+        customer = Customer.objects.create(billing_address=billing_address,
+                                           shipping_address=shipping_address,
+                                           **validated_data)
+
+        return customer
 
 
 class InvoiceSerializer(serializers.ModelSerializer):
